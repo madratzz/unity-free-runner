@@ -98,11 +98,12 @@ jobs:
                 login=(-manualLicenseFile /lic/Unity_lic.ulf)
               fi
               # Call the binary: the image'"'"'s unity-editor wrapper always adds -batchmode.
-              timeout 45m xvfb-run -a -s "-screen 0 1920x1080x24" "$UNITY_PATH/Editor/Unity" "${login[@]}" -projectPath /project -executeMethod SceneShots.Capture -outDir /out -logFile /out/unity.log
+              timeout 10m xvfb-run -a -s "-screen 0 1920x1080x24" "$UNITY_PATH/Editor/Unity" "${login[@]}" -projectPath /project -executeMethod SceneShots.Capture -outDir /out -logFile /out/unity.log
               exit $?
             ' || status=$?
           rm -rf lic
           ls -la out
+          echo '::group::unity.log (last 120 lines)'; tail -n 120 out/unity.log 2>/dev/null; echo '::endgroup::'
           if grep -q "TimeStamp validation failed\|No valid Unity Editor license" out/unity.log 2>/dev/null; then
             echo "::error::Unity licence activation failed"; exit 1
           fi

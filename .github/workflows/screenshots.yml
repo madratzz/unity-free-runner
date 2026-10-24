@@ -1,0 +1,100 @@
+name: Scene screenshots
+
+on:
+  workflow_dispatch:
+    inputs:
+      repos:
+        description: "Repos to capture, one per line or comma-separated: owner/repo or owner/repo@branch"
+        required: true
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - id: m
+        env:
+          REPOS: ${{ inputs.repos }}
+        run: |
+          python3 - <<'EOF' >> "$GITHUB_OUTPUT"
+          import json, os, re
+          items = []
+          for raw in re.split(r"[\n,]+", os.environ["REPOS"]):
+              raw = raw.strip()
+              if not raw:
+                  continue
+              repo, _, ref = raw.partition("@")
+              items.append({"repo": repo, "ref": ref, "name": re.sub(r"[^A-Za-z0-9_.-]", "_", raw)})
+          print("matrix=" + json.dumps({"include": items}))
+          EOF
+
+  capture:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: runner
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ matrix.repo }}
+          ref: ${{ matrix.ref }}
+          path: student
+          lfs: true
+
+      - name: Find the Unity project and editor image
+        id: unity
+        run: |
+          proj=$(dirname "$(dirname "$(find student -path '*/ProjectSettings/ProjectVersion.txt' -not -path '*/Library/*' | head -1)")")
+          if [ -z "$proj" ] || [ "$proj" = "." ]; then echo "No Unity project found"; exit 1; fi
+          ver=$(sed -n 's/^m_EditorVersion: //p' "$proj/ProjectSettings/ProjectVersion.txt" | tr -d '\r')
+          image="unityci/editor:ubuntu-${ver}-base-3"
+          if ! docker manifest inspect "$image" >/dev/null 2>&1; then
+            mm=$(echo "$ver" | cut -d. -f1,2)
+            alt=$(curl -s "https://hub.docker.com/v2/repositories/unityci/editor/tags?page_size=100&name=ubuntu-${mm}." \
+              | python3 -c 'import json,re,sys; t=[r["name"] for r in json.load(sys.stdin)["results"] if re.fullmatch(r"ubuntu-[\d.]+f\d+-base-3", r["name"])]; k=lambda n:[int(x) for x in re.findall(r"\d+", n)]; print(sorted(t,key=k)[-1] if t else "")')
+            [ -n "$alt" ] || { echo "No editor image for $ver"; exit 1; }
+            echo "::warning::Unity $ver has no image; using $alt (project is upgraded in this run only)"
+            image="unityci/editor:$alt"
+          fi
+          echo "project=$proj" >> "$GITHUB_OUTPUT"
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+
+      - name: Add the capture script
+        run: cp -r runner/Editor/SceneShots "${{ steps.unity.outputs.project }}/Assets/SceneShots"
+
+      - name: Capture scenes
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+        run: |
+          [ -n "$UNITY_LICENSE" ] || { echo "UNITY_LICENSE secret is not set"; exit 1; }
+          mkdir -p out lic
+          printf '%s' "$UNITY_LICENSE" > lic/Unity_lic.ulf
+          docker run --rm \
+            -v "$PWD/${{ steps.unity.outputs.project }}:/project" -v "$PWD/out:/out" -v "$PWD/lic:/lic:ro" \
+            "${{ steps.unity.outputs.image }}" bash -c '
+              mkdir -p /root/.local/share/unity3d/Unity
+              cp /lic/Unity_lic.ulf /root/.local/share/unity3d/Unity/Unity_lic.ulf
+              unity-editor -batchmode -manualLicenseFile /lic/Unity_lic.ulf -logFile - -quit || true
+              unity-editor -batchmode -projectPath /project -executeMethod SceneShots.Capture -outDir /out -logFile /out/unity.log
+            ' || echo "::error::Unity exited with an error (see unity.log in the artifact)"
+          rm -rf lic
+          ls -la out
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: shots-${{ matrix.name }}
+          path: out
+          retention-days: 7

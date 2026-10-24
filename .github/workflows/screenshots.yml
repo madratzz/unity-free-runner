@@ -81,7 +81,7 @@ jobs:
           UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
         run: |
           # Unity 6 rejects a .ulf copied from another machine ("TimeStamp validation failed"),
-          # so prefer activating with the account (UNITY_EMAIL + UNITY_PASSWORD) and return the seat after.
+          # so prefer signing in with the account (UNITY_EMAIL + UNITY_PASSWORD).
           if [ -z "$UNITY_EMAIL$UNITY_LICENSE" ]; then echo "::error::Set UNITY_EMAIL + UNITY_PASSWORD (or UNITY_LICENSE)"; exit 1; fi
           mkdir -p out lic
           [ -n "$UNITY_LICENSE" ] && printf '%s' "$UNITY_LICENSE" > lic/Unity_lic.ulf
@@ -90,17 +90,16 @@ jobs:
             -e UNITY_EMAIL -e UNITY_PASSWORD \
             -v "$PWD/${{ steps.unity.outputs.project }}:/project" -v "$PWD/out:/out" -v "$PWD/lic:/lic:ro" \
             "${{ steps.unity.outputs.image }}" bash -c '
+              # Personal seats have no "com.unity.editor.headless" entitlement, which -batchmode needs,
+              # so run the normal editor inside xvfb; SceneShots.Capture quits the editor itself.
               if [ -n "$UNITY_EMAIL" ]; then
-                unity-editor -batchmode -nographics -quit -logFile - -username "$UNITY_EMAIL" -password "$UNITY_PASSWORD" \
-                  | grep -E "Licens|activat|Error" || true
+                login=(-username "$UNITY_EMAIL" -password "$UNITY_PASSWORD")
               else
-                unity-editor -batchmode -nographics -quit -logFile - -manualLicenseFile /lic/Unity_lic.ulf | grep -E "Licens|Error" || true
+                login=(-manualLicenseFile /lic/Unity_lic.ulf)
               fi
-              unity-editor -batchmode -projectPath /project -executeMethod SceneShots.Capture -outDir /out -logFile /out/unity.log
-              rc=$?
-              [ -n "$UNITY_EMAIL" ] && unity-editor -batchmode -nographics -quit -logFile /dev/null -returnlicense \
-                -username "$UNITY_EMAIL" -password "$UNITY_PASSWORD" || true
-              exit $rc
+              # Call the binary: the image'"'"'s unity-editor wrapper always adds -batchmode.
+              timeout 45m xvfb-run -a -s "-screen 0 1920x1080x24" "$UNITY_PATH/Editor/Unity" "${login[@]}" -projectPath /project -executeMethod SceneShots.Capture -outDir /out -logFile /out/unity.log
+              exit $?
             ' || status=$?
           rm -rf lic
           ls -la out

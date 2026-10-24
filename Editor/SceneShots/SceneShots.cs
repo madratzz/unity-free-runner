@@ -2,7 +2,7 @@
 // and saves two images per scene: what the scene's own camera sees, and a wide
 // angled shot framing everything in the scene. Writes manifest.json next to them.
 //
-// Run: Unity -batchmode -projectPath <proj> -executeMethod SceneShots.Capture -outDir <dir> -quit
+// Run (under xvfb; Personal seats cannot use -batchmode): Unity -projectPath <proj> -executeMethod SceneShots.Capture -outDir <dir>
 using System;
 using System.Collections.Generic;
 using System.IO;

@@ -77,20 +77,38 @@ jobs:
       - name: Capture scenes
         env:
           UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
         run: |
-          [ -n "$UNITY_LICENSE" ] || { echo "UNITY_LICENSE secret is not set"; exit 1; }
+          # Unity 6 rejects a .ulf copied from another machine ("TimeStamp validation failed"),
+          # so prefer activating with the account (UNITY_EMAIL + UNITY_PASSWORD) and return the seat after.
+          if [ -z "$UNITY_EMAIL$UNITY_LICENSE" ]; then echo "::error::Set UNITY_EMAIL + UNITY_PASSWORD (or UNITY_LICENSE)"; exit 1; fi
           mkdir -p out lic
-          printf '%s' "$UNITY_LICENSE" > lic/Unity_lic.ulf
+          [ -n "$UNITY_LICENSE" ] && printf '%s' "$UNITY_LICENSE" > lic/Unity_lic.ulf
+          status=0
           docker run --rm \
+            -e UNITY_EMAIL -e UNITY_PASSWORD \
             -v "$PWD/${{ steps.unity.outputs.project }}:/project" -v "$PWD/out:/out" -v "$PWD/lic:/lic:ro" \
             "${{ steps.unity.outputs.image }}" bash -c '
-              mkdir -p /root/.local/share/unity3d/Unity
-              cp /lic/Unity_lic.ulf /root/.local/share/unity3d/Unity/Unity_lic.ulf
-              unity-editor -batchmode -manualLicenseFile /lic/Unity_lic.ulf -logFile - -quit || true
+              if [ -n "$UNITY_EMAIL" ]; then
+                unity-editor -batchmode -nographics -quit -logFile - -username "$UNITY_EMAIL" -password "$UNITY_PASSWORD" \
+                  | grep -E "Licens|activat|Error" || true
+              else
+                unity-editor -batchmode -nographics -quit -logFile - -manualLicenseFile /lic/Unity_lic.ulf | grep -E "Licens|Error" || true
+              fi
               unity-editor -batchmode -projectPath /project -executeMethod SceneShots.Capture -outDir /out -logFile /out/unity.log
-            ' || echo "::error::Unity exited with an error (see unity.log in the artifact)"
+              rc=$?
+              [ -n "$UNITY_EMAIL" ] && unity-editor -batchmode -nographics -quit -logFile /dev/null -returnlicense \
+                -username "$UNITY_EMAIL" -password "$UNITY_PASSWORD" || true
+              exit $rc
+            ' || status=$?
           rm -rf lic
           ls -la out
+          if grep -q "TimeStamp validation failed\|No valid Unity Editor license" out/unity.log 2>/dev/null; then
+            echo "::error::Unity licence activation failed"; exit 1
+          fi
+          ls out/*.png >/dev/null 2>&1 || { echo "::error::Unity exited ($status) without any screenshots (see unity.log)"; exit 1; }
+          [ "$status" = 0 ] || echo "::warning::Unity exited with $status but produced screenshots"
 
       - uses: actions/upload-artifact@v4
         if: always()

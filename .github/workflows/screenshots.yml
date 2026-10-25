@@ -92,8 +92,14 @@ jobs:
             "${{ steps.unity.outputs.image }}" bash -c '
               # Personal seats have no "com.unity.editor.headless" entitlement, which -batchmode needs,
               # so run the normal editor inside xvfb; SceneShots.Capture quits the editor itself.
+              # Unity could not create its preferences folder under /root, so give it a writable HOME
+              # where the licensing client can keep the sign-in between the two editor launches.
+              export HOME=/tmp/home XDG_DATA_HOME=/tmp/home/.local/share XDG_CONFIG_HOME=/tmp/home/.config
+              mkdir -p "$XDG_DATA_HOME/unity3d/Unity" "$XDG_CONFIG_HOME/unity3d"
               if [ -n "$UNITY_EMAIL" ]; then
                 login=(-username "$UNITY_EMAIL" -password "$UNITY_PASSWORD")
+                # Sign in once in batch mode (it honours -username/-password) so the token is saved.
+                timeout 5m unity-editor -quit -logFile /out/signin.log "${login[@]}" || true
               else
                 login=(-manualLicenseFile /lic/Unity_lic.ulf)
               fi
@@ -103,6 +109,7 @@ jobs:
             ' || status=$?
           rm -rf lic
           ls -la out
+          echo '::group::signin.log'; grep -i 'licens\|token\|entitle\|error' out/signin.log 2>/dev/null | tail -n 40; echo '::endgroup::'
           echo '::group::unity.log (last 120 lines)'; tail -n 120 out/unity.log 2>/dev/null; echo '::endgroup::'
           if grep -q "TimeStamp validation failed\|No valid Unity Editor license" out/unity.log 2>/dev/null; then
             echo "::error::Unity licence activation failed"; exit 1
